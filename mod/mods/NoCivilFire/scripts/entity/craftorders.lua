@@ -67,7 +67,7 @@ local possibleFriends = {}
 -- Functions
 
 local function addCivilNeutrality(noCallbacks)
-    if callingPlayer or Faction().isAIFaction then return end
+    if callingPlayer or not Faction() or Faction().isAIFaction then return end
     if not noCallbacks then
         Sector():registerCallback("onEntityCreate", "noCivilFire_befriendCivilianDelayed")
         Sector():registerCallback("onEntityEntered", "noCivilFire_befriendCivilian")
@@ -85,7 +85,7 @@ local function addCivilNeutrality(noCallbacks)
 end
 
 local function removeCivilNeutrality()
-    if callingPlayer or Faction().isAIFaction then return end
+    if callingPlayer or not Faction() or Faction().isAIFaction then return end
     Sector():unregisterCallback("onEntityCreate", "noCivilFire_befriendCivilianDelayed")
     Sector():unregisterCallback("onEntityEntered", "noCivilFire_befriendCivilian")
 end
@@ -96,7 +96,7 @@ local old_initialize = CraftOrders.initialize
 function CraftOrders.initialize()
     if old_initialize then old_initialize() end
     if callingPlayer then return end
-    if Faction().isAIFaction then return end
+    if not Faction() or Faction().isAIFaction then return end
     local ai = ShipAI()
     if ai.state == 3 or ai.state == 9 then -- if ship is in aggressive mode
         addCivilNeutrality()
@@ -107,7 +107,7 @@ end
 local old_setAIAction = CraftOrders.setAIAction
 function CraftOrders.setAIAction(action, index, position)
     old_setAIAction(action, index, position)
-    if Faction().isAIFaction then return end
+    if not Faction() or Faction().isAIFaction then return end
     if callingPlayer and not checkEntityInteractionPermissions(Entity(), AlliancePrivilege.FlyCrafts) then return end
     local ai = ShipAI()
     if ai.state ~= 3 and ai.state ~= 9 then
@@ -123,7 +123,7 @@ local old_updateServer = CraftOrders.updateServer
 function CraftOrders.updateServer(ms)
     if old_updateServer then old_updateServer(ms) end
     if callingPlayer then return end
-    if Faction().isAIFaction then return end
+    if not Faction() or Faction().isAIFaction then return end
     if #possibleFriends > 0 then
         if spareCivilians then
             local ai = ShipAI()
@@ -186,7 +186,7 @@ end
 
 local old_secure = CraftOrders.secure
 function CraftOrders.secure()
-    if Faction().isAIFaction then
+    if not Faction() or Faction().isAIFaction then
         return old_secure()
     else
         local data = old_secure()
@@ -198,7 +198,7 @@ end
 local old_restore = CraftOrders.restore
 function CraftOrders.restore(dataIn)
     old_restore(dataIn)
-    if callingPlayer or not Faction().isAIFaction then
+    if not callingPlayer and Faction() and not Faction().isAIFaction then
         spareCivilians = dataIn["spareCivilians"] == nil or dataIn["spareCivilians"] == 1
         CraftOrders.noCivilFire_civilianShooting = not spareCivilians
     end
@@ -209,7 +209,7 @@ end
 CraftOrders.noCivilFire_civilianShooting = false
 
 function CraftOrders.noCivilFire_setCivilianShooting(on)
-    if Faction().isAIFaction then return false end
+    if not Faction() or Faction().isAIFaction then return false end
     on = not (on and true)
     spareCivilians = on
     CraftOrders.noCivilFire_civilianShooting = not spareCivilians
