@@ -1,7 +1,7 @@
 --[[
 Modname: NoCivilFire
 Author: Rinart73
-Version: 1.1.0 (0.17.1+)
+Version: 1.2.0 (0.17.1 - 0.18.2)
 Description: Prevents player/alliance ships from attacking civilians, thus saving your reputation.
 This mod is serverside, optionally it can be also installed on client-side to allow players to toggle aggression towards civilian ships on and off (off by default).
 ]]
@@ -9,83 +9,123 @@ This mod is serverside, optionally it can be also installed on client-side to al
 if onClient() then
 
 
-local lang = getCurrentLanguage()
-local spareCiviliansText = { en = "Don't attack civilians", ru = "Не атаковать гражданских" }
-spareCiviliansText = spareCiviliansText[lang] and spareCiviliansText[lang] or spareCiviliansText["en"]
+require ("faction")
+require ("stringutility")
 
+-- register for localization
+if i18n then i18n.registerMod("NoCivilFire") end
+
+-- Init UI
 local spareCiviliansCheckBox
+local spareCiviliansCheckBoxId = CraftOrders.addElement("Don't attack civilians", "noCivilFire_onSpareCiviliansCheckBoxChecked", CraftOrders.ElementType.CheckBox) -- will receive row index
 
-function CraftOrders.initUI()
+local function afterInitUI()
+    if not CraftOrders.Elements[spareCiviliansCheckBoxId] then
+        print("[NoCivilFire][ERROR]: Couldn't create UI")
+        return
+    end
+    spareCiviliansCheckBox = CraftOrders.Elements[spareCiviliansCheckBoxId].element -- get created ui element
+    invokeServerFunction("noCivilFire_sendSettingsToClient")
+end
+CraftOrders.registerInitUICallback(afterInitUI)
 
-    local res = getResolution()
-    local size = vec2(250, 330)
+-- Callbacks
 
-    local menu = ScriptUI()
-    local window = menu:createWindow(Rect(res * 0.5 - size * 0.5, res * 0.5 + size * 0.5))
-    menu:registerWindow(window, "Orders"%_t)
-
-    window.caption = "Craft Orders"%_t
-    window.showCloseButton = 1
-    window.moveable = 1
-
-    local splitter = UIHorizontalMultiSplitter(Rect(window.size), 10, 10, 8)
-
-    window:createButton(splitter:partition(0), "Idle"%_t, "onIdleButtonPressed")
-    window:createButton(splitter:partition(1), "Passive"%_t, "onPassiveButtonPressed")
-    window:createButton(splitter:partition(2), "Guard This Position"%_t, "onGuardButtonPressed")
-    window:createButton(splitter:partition(3), "Patrol Sector"%_t, "onPatrolButtonPressed")
-    window:createButton(splitter:partition(4), "Escort Me"%_t, "onEscortMeButtonPressed")
-    window:createButton(splitter:partition(5), "Attack Enemies"%_t, "onAttackEnemiesButtonPressed")
-    window:createButton(splitter:partition(6), "Mine"%_t, "onMineButtonPressed")
-    window:createButton(splitter:partition(7), "Salvage"%_t, "onSalvageButtonPressed")
-    
-    spareCiviliansCheckBox = window:createCheckBox(splitter:partition(8), spareCiviliansText, "onSpareCiviliansCheckBoxClicked")
-
-    invokeServerFunction("sendSettingsToClient") -- request checkbox status
+function CraftOrders.noCivilFire_onSpareCiviliansCheckBoxChecked()
+    if not checkEntityInteractionPermissions(Entity(), AlliancePrivilege.FlyCrafts) then return end
+    invokeServerFunction("noCivilFire_onSpareCiviliansCheckBoxChecked", spareCiviliansCheckBox.checked)
 end
 
-function CraftOrders.onSpareCiviliansCheckBoxClicked()
-    invokeServerFunction("onSpareCiviliansCheckBoxClicked", spareCiviliansCheckBox.checked)
+-- Functions
+
+function CraftOrders.noCivilFire_receiveSettings(checked)
+    if spareCiviliansCheckBox then
+        spareCiviliansCheckBox:setCheckedNoCallback(checked)
+    end
 end
 
-function CraftOrders.receiveSettings(checked)
-    spareCiviliansCheckBox:setCheckedNoCallback(checked)
+-- API
+
+function CraftOrders.noCivilFire_setCivilianShooting(on)
+    if not checkEntityInteractionPermissions(Entity(), AlliancePrivilege.FlyCrafts) then return false end
+    on = not (on and true)
+    if spareCiviliansCheckBox then
+        spareCiviliansCheckBox:setCheckedNoCallback(on)
+    end
+    invokeServerFunction("noCivilFire_onSpareCiviliansCheckBoxChecked", on)
+    return true
 end
 
 
 else -- onServer
 
 
-CraftOrders.spareCivilians = true
+local spareCivilians = true
+local civilianFriends = {} -- save friends to be able to unfriend them when spareCivilians is set to false
+local possibleFriends = {}
 
-local civilianFriends = {} -- save friends to be able to unfriend them when CraftOrders.spareCivilians is set to false
+-- Functions
 
+local function addCivilNeutrality(noCallbacks)
+    if callingPlayer or Faction().isAIFaction then return end
+    if not noCallbacks then
+        Sector():registerCallback("onEntityCreate", "noCivilFire_befriendCivilianDelayed")
+        Sector():registerCallback("onEntityEntered", "noCivilFire_befriendCivilian")
+    end
+
+    if not spareCivilians then return end
+    local ai = ShipAI()
+    local civils = {Sector():getEntitiesByScript("civilship.lua")}
+    local civilIndex
+    for i = 1, #civils do
+        civilIndex = civils[i].index
+        civilianFriends[#civilianFriends+1] = civilIndex
+        ai:registerFriendEntity(civilIndex)
+    end
+end
+
+local function removeCivilNeutrality()
+    if callingPlayer or Faction().isAIFaction then return end
+    Sector():unregisterCallback("onEntityCreate", "noCivilFire_befriendCivilianDelayed")
+    Sector():unregisterCallback("onEntityEntered", "noCivilFire_befriendCivilian")
+end
+
+-- Predefined functions
+
+local old_initialize = CraftOrders.initialize
 function CraftOrders.initialize()
-    if ShipAI().state == 3 then -- if ship is in aggressive mode
-        CraftOrders.addCivilNeutrality()
+    if old_initialize then old_initialize() end
+    if callingPlayer then return end
+    if Faction().isAIFaction then return end
+    local ai = ShipAI()
+    if ai.state == 3 or ai.state == 9 then -- if ship is in aggressive mode
+        addCivilNeutrality()
     end
 end
 
 -- removeSpecialOrders is local function, but setAIAction will do too
-CraftOrders.old_setAIAction = CraftOrders.setAIAction
-
+local old_setAIAction = CraftOrders.setAIAction
 function CraftOrders.setAIAction(action, index, position)
-    CraftOrders.old_setAIAction(action, index, position)
-    if ShipAI().state ~= 3 then
-        CraftOrders.removeCivilNeutrality()
+    old_setAIAction(action, index, position)
+    if Faction().isAIFaction then return end
+    if callingPlayer and not checkEntityInteractionPermissions(Entity(), AlliancePrivilege.FlyCrafts) then return end
+    local ai = ShipAI()
+    if ai.state ~= 3 and ai.state ~= 9 then
+        removeCivilNeutrality()
     else
-        CraftOrders.addCivilNeutrality()
+        addCivilNeutrality()
     end
 end
 
 --[[ We need this workaround because there is no way to immediately know if NEW ship is civil (onEntityCreate fires before this attribute is applied)
- There should not be significant performance impact since this array will be not empty only when ai.state = 3 and new ships were just created ]]
-local possibleFriends = {}
-
-function CraftOrders.updateServer()
+ There should not be significant performance impact since this array will be not empty only when ai.state = 3/9 and new ships were just created ]]
+local old_updateServer = CraftOrders.updateServer
+function CraftOrders.updateServer(ms)
+    if old_updateServer then old_updateServer(ms) end
+    if callingPlayer then return end
     if Faction().isAIFaction then return end
     if #possibleFriends > 0 then
-        if CraftOrders.spareCivilians then
+        if spareCivilians then
             local ai = ShipAI()
             local possibleFriend
             for i = 1, #possibleFriends do
@@ -100,17 +140,17 @@ function CraftOrders.updateServer()
     end
 end
 
--- callbacks
+-- Сallbacks
 
-function CraftOrders.befriendCivilianDelayed(entityIndex)
-    if not CraftOrders.spareCivilians then return end
+function CraftOrders.noCivilFire_befriendCivilianDelayed(entityIndex)
+    if callingPlayer or not spareCivilians then return end
     if Entity(entityIndex).isShip then
         possibleFriends[#possibleFriends+1] = entityIndex
     end
 end
 
-function CraftOrders.befriendCivilian(entityIndex)
-    if not CraftOrders.spareCivilians then return end
+function CraftOrders.noCivilFire_befriendCivilian(entityIndex)
+    if not spareCivilians then return end
     local entity = Entity(entityIndex)
     if entity.isShip and entity:getValue("is_civil") then
         civilianFriends[#civilianFriends+1] = entityIndex
@@ -118,8 +158,11 @@ function CraftOrders.befriendCivilian(entityIndex)
     end
 end
 
-function CraftOrders.onSpareCiviliansCheckBoxClicked(checked)
-    CraftOrders.spareCivilians = checked
+function CraftOrders.noCivilFire_onSpareCiviliansCheckBoxChecked(checked)
+    if not checkEntityInteractionPermissions(Entity(), AlliancePrivilege.FlyCrafts) then return end
+    callingPlayer = nil
+    spareCivilians = checked
+    CraftOrders.noCivilFire_civilianShooting = not spareCivilians
     if not checked then -- unfriend them
         local ai = ShipAI()
         for i = 1, #civilianFriends do
@@ -127,61 +170,60 @@ function CraftOrders.onSpareCiviliansCheckBoxClicked(checked)
         end
         civilianFriends = {}
     else -- befriend them again
-        CraftOrders.addCivilNeutrality(true)
+        addCivilNeutrality(true)
     end
+    broadcastInvokeClientFunction("noCivilFire_receiveSettings", checked)
 end
 
--- functions
+-- Functions
 
-function CraftOrders.addCivilNeutrality(noCallbacks)
-    if Faction().isAIFaction then return end
-    if not noCallbacks then
-        Sector():registerCallback("onEntityCreate", "befriendCivilianDelayed")
-        Sector():registerCallback("onEntityEntered", "befriendCivilian")
-    end
-
-    if not CraftOrders.spareCivilians then return end
-    local ai = ShipAI()
-    local civils = {Sector():getEntitiesByScript("civilship.lua")}
-    local civilIndex
-    for i = 1, #civils do
-        civilIndex = civils[i].index
-        civilianFriends[#civilianFriends+1] = civilIndex
-        ai:registerFriendEntity(civilIndex)
-    end
+function CraftOrders.noCivilFire_sendSettingsToClient()
+    if not callingPlayer then return end
+    invokeClientFunction(Player(callingPlayer), "noCivilFire_receiveSettings", spareCivilians)
 end
 
-function CraftOrders.removeCivilNeutrality()
-    if Faction().isAIFaction then return end
-    Sector():unregisterCallback("onEntityCreate", "befriendCivilianDelayed")
-    Sector():unregisterCallback("onEntityEntered", "befriendCivilian")
-end
+-- Data securing
 
-function CraftOrders.sendSettingsToClient()
-    broadcastInvokeClientFunction("receiveSettings", CraftOrders.spareCivilians)
-end
-
--- data securing
-
-CraftOrders.old_secure = CraftOrders.secure
-
+local old_secure = CraftOrders.secure
 function CraftOrders.secure()
     if Faction().isAIFaction then
-        return CraftOrders.old_secure()
+        return old_secure()
     else
-        local data = CraftOrders.old_secure()
-        data["spareCivilians"] = CraftOrders.spareCivilians and 1 or 0
+        local data = old_secure()
+        data["spareCivilians"] = spareCivilians and 1 or 0
         return data
     end
 end
 
-CraftOrders.old_restore = CraftOrders.restore
-
+local old_restore = CraftOrders.restore
 function CraftOrders.restore(dataIn)
-    CraftOrders.old_restore(dataIn)
-    if not Faction().isAIFaction then
-        CraftOrders.spareCivilians = dataIn["spareCivilians"] == nil or dataIn["spareCivilians"] == 1
+    old_restore(dataIn)
+    if callingPlayer or not Faction().isAIFaction then
+        spareCivilians = dataIn["spareCivilians"] == nil or dataIn["spareCivilians"] == 1
+        CraftOrders.noCivilFire_civilianShooting = not spareCivilians
     end
+end
+
+-- API
+
+CraftOrders.noCivilFire_civilianShooting = false
+
+function CraftOrders.noCivilFire_setCivilianShooting(on)
+    if Faction().isAIFaction then return false end
+    on = not (on and true)
+    spareCivilians = on
+    CraftOrders.noCivilFire_civilianShooting = not spareCivilians
+    if not on then -- unfriend them
+        local ai = ShipAI()
+        for i = 1, #civilianFriends do
+            ai:unregisterFriendEntity(civilianFriends[i])
+        end
+        civilianFriends = {}
+    else -- befriend them again
+        addCivilNeutrality(true)
+    end
+    broadcastInvokeClientFunction("noCivilFire_receiveSettings", on)
+    return true
 end
 
 
